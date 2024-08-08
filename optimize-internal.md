@@ -117,6 +117,147 @@ protected Program getProgram() {
   }
 ```
 
+## 接下来会调用VolcanoPlanner的planner.setRoot(rel);
+```java
+@Override public void setRoot(RelNode rel) {
+    this.root = registerImpl(rel, null);
+    if (this.originalRoot == null) {
+      this.originalRoot = rel;
+    }
 
+    rootConvention = this.root.getConvention();
+    ensureRootConverters();
+  }
+
+/**
+   * Registers a new expression <code>exp</code> and queues up rule matches.
+   * If <code>set</code> is not null, makes the expression part of that
+   * equivalence set. If an identical expression is already registered, we
+   * don't need to register this one and nor should we queue up rule matches.
+   *
+   * @param rel relational expression to register. Must be either a
+   *         {@link RelSubset}, or an unregistered {@link RelNode}
+   * @param set set that rel belongs to, or <code>null</code>
+   * @return the equivalence-set
+   */
+  private RelSubset registerImpl(
+      RelNode rel,
+      @Nullable RelSet set) {
+    if (rel instanceof RelSubset) {
+      return registerSubset(set, (RelSubset) rel);
+    }
+
+    assert !isRegistered(rel) : "already been registered: " + rel;
+    if (rel.getCluster().getPlanner() != this) {
+      throw new AssertionError("Relational expression " + rel
+          + " belongs to a different planner than is currently being used.");
+    }
+
+    // Now is a good time to ensure that the relational expression
+    // implements the interface required by its calling convention.
+    final RelTraitSet traits = rel.getTraitSet();
+    final Convention convention = traits.getTrait(ConventionTraitDef.INSTANCE);
+    assert convention != null;
+    if (!convention.getInterface().isInstance(rel)
+        && !(rel instanceof Converter)) {
+      throw new AssertionError("Relational expression " + rel
+          + " has calling-convention " + convention
+          + " but does not implement the required interface '"
+          + convention.getInterface() + "' of that convention");
+    }
+    if (traits.size() != traitDefs.size()) {
+      throw new AssertionError("Relational expression " + rel
+          + " does not have the correct number of traits: " + traits.size()
+          + " != " + traitDefs.size());
+    }
+
+    // Ensure that its sub-expressions are registered.
+    rel = rel.onRegister(this);
+
+    // Record its provenance. (Rule call may be null.)
+    final VolcanoRuleCall ruleCall = ruleCallStack.peek();
+    if (ruleCall == null) {
+      provenanceMap.put(rel, Provenance.EMPTY);
+    } else {
+      provenanceMap.put(
+          rel,
+          new RuleProvenance(
+              ruleCall.rule,
+              ImmutableList.copyOf(ruleCall.rels),
+              ruleCall.id));
+    }
+
+    // If it is equivalent to an existing expression, return the set that
+    // the equivalent expression belongs to.
+    RelDigest digest = rel.getRelDigest();
+    RelNode equivExp = mapDigestToRel.get(digest);
+    if (equivExp == null) {
+      // do nothing
+    } else if (equivExp == rel) {
+      // The same rel is already registered, so return its subset
+      return getSubsetNonNull(equivExp);
+    } else {
+      if (!RelOptUtil.areRowTypesEqual(equivExp.getRowType(),
+          rel.getRowType(), false)) {
+        throw new IllegalArgumentException(
+            RelOptUtil.getFullTypeDifferenceString("equiv rowtype",
+                equivExp.getRowType(), "rel rowtype", rel.getRowType()));
+      }
+      checkPruned(equivExp, rel);
+
+      RelSet equivSet = getSet(equivExp);
+      if (equivSet != null) {
+        LOGGER.trace(
+            "Register: rel#{} is equivalent to {}", rel.getId(), equivExp);
+        return registerSubset(set, getSubsetNonNull(equivExp));
+      }
+    }
+
+    // Converters are in the same set as their children.
+    if (rel instanceof Converter) {
+      final RelNode input = ((Converter) rel).getInput();
+      final RelSet childSet = castNonNull(getSet(input));
+      if ((set != null)
+          && (set != childSet)
+          && (set.equivalentSet == null)) {
+        LOGGER.trace(
+            "Register #{} {} (and merge sets, because it is a conversion)",
+            rel.getId(), rel.getRelDigest());
+        merge(set, childSet);
+
+        // During the mergers, the child set may have changed, and since
+        // we're not registered yet, we won't have been informed. So
+        // check whether we are now equivalent to an existing
+        // expression.
+        if (fixUpInputs(rel)) {
+          digest = rel.getRelDigest();
+          RelNode equivRel = mapDigestToRel.get(digest);
+          if ((equivRel != rel) && (equivRel != null)) {
+
+            // make sure this bad rel didn't get into the
+            // set in any way (fixupInputs will do this but it
+            // doesn't know if it should so it does it anyway)
+            set.obliterateRelNode(rel);
+
+            // There is already an equivalent expression. Use that
+            // one, and forget about this one.
+            return getSubsetNonNull(equivRel);
+          }
+        }
+      } else {
+        set = childSet;
+      }
+    }
+
+    // Place the expression in the appropriate equivalence set.
+    if (set == null) {
+      set =
+          new RelSet(nextSetId++,
+              Util.minus(RelOptUtil.getVariablesSet(rel),
+                  rel.getVariablesSet()),
+              RelOptUtil.getVariablesUsed(rel));
+      this.allSets.add(set);
+    }
+```
 
 
