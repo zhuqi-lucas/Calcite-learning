@@ -330,6 +330,44 @@ protected Program getProgram() {
   }
 ```
 
-##然后又调用了registerImpl(rel, set) 进行深度优先的递归
+## 然后又调用了registerImpl(rel, set) 进行深度优先的递归， 接下来看一下注册过程做了啥
+主要逻辑是触发规则rule:
+
+```java
+// Queue up all rules triggered by this relexp's creation.
+    fireRules(rel);
+
+ /**
+   * Fires all rules matched by a relational expression.
+   *
+   * @param rel      Relational expression which has just been created (or maybe
+   *                 from the queue)
+   */
+  void fireRules(RelNode rel) {
+    for (RelOptRuleOperand operand : classOperands.get(rel.getClass())) {
+      if (operand.matches(rel)) {
+        final VolcanoRuleCall ruleCall;
+        ruleCall = new DeferringRuleCall(this, operand);
+        ruleCall.match(rel);
+      }
+    }
+  }
+
+  /**
+   * Applies this rule, with a given relational expression in the first slot.
+   */
+  void match(RelNode rel) {
+    assert getOperand0().matches(rel) : "precondition";
+    final int solve = 0;
+    int operandOrdinal = castNonNull(getOperand0().solveOrder)[solve];
+    this.rels[operandOrdinal] = rel;
+    matchRecurse(solve + 1);
+  }
+```
+
+## 接下来根据匹配的规则进行应用
+
+
+
 
 
