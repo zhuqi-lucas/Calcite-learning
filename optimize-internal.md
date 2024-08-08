@@ -260,4 +260,76 @@ protected Program getProgram() {
     }
 ```
 
+## 先深度优先注册子节点
+```java
+@Override public RelNode onRegister(RelOptPlanner planner) {
+    List<RelNode> oldInputs = getInputs();
+    List<RelNode> inputs = new ArrayList<>(oldInputs.size());
+    for (final RelNode input : oldInputs) {
+      RelNode e = planner.ensureRegistered(input, null);
+      assert e == input || RelOptUtil.equal("rowtype of rel before registration",
+          input.getRowType(),
+          "rowtype of rel after registration",
+          e.getRowType(),
+          Litmus.THROW);
+      inputs.add(e);
+    }
+    RelNode r = this;
+    if (!Util.equalShallow(oldInputs, inputs)) {
+      r = copy(getTraitSet(), inputs);
+    }
+    r.recomputeDigest();
+    assert r.isValid(Litmus.THROW, null);
+    return r;
+  }
+
+@Override public RelSubset ensureRegistered(RelNode rel, @Nullable RelNode equivRel) {
+    RelSubset result;
+    final RelSubset subset = getSubset(rel);
+    if (subset != null) {
+      if (equivRel != null) {
+        final RelSubset equivSubset = getSubsetNonNull(equivRel);
+        if (subset.set != equivSubset.set) {
+          merge(equivSubset.set, subset.set);
+        }
+      }
+      result = canonize(subset);
+    } else {
+      result = register(rel, equivRel);
+    }
+
+    // Checking if tree is valid considerably slows down planning
+    // Only doing it if logger level is debug or finer
+    if (LOGGER.isDebugEnabled()) {
+      assert isValid(Litmus.THROW);
+    }
+
+    return result;
+  }
+
+ @Override public RelSubset register(
+      RelNode rel,
+      @Nullable RelNode equivRel) {
+    assert !isRegistered(rel) : "pre: isRegistered(rel)";
+    final RelSet set;
+    if (equivRel == null) {
+      set = null;
+    } else {
+      final RelDataType relType = rel.getRowType();
+      final RelDataType equivRelType = equivRel.getRowType();
+      if (!RelOptUtil.areRowTypesEqual(relType,
+          equivRelType, false)) {
+        throw new IllegalArgumentException(
+            RelOptUtil.getFullTypeDifferenceString("rel rowtype", relType,
+                "equiv rowtype", equivRelType));
+      }
+      equivRel = ensureRegistered(equivRel, null);
+      set = getSet(equivRel);
+    }
+    return registerImpl(rel, set);
+  }
+```
+
+##然后又调用了registerImpl(rel, set) 进行深度优先的递归
+
 
